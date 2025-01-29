@@ -13,4 +13,4 @@ Domain is determined by a header value Plausible-Domain.  I opted for this rathe
 # Getting Started
 Once you have cloned this repository you will need to edit the wrangler file to match the KV binding to your own one.
 
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/jamesMorgan654/plausible-webhook)
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/jamesMorgan654/plausible_rudderstack_webhook)
