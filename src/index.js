@@ -1,85 +1,86 @@
-async function handleRequest(request, env) {
+const express = require("express");
+const fetch = require("node-fetch");
+const customLogging = require("./customLogging");
+
+const app = express();
+app.use(express.json());
+
+app.all("/", async (req, res) => {
     try {
         // Get the endpoint url with default value
-        let plausibleEndpoint = env.PLAUSIBLE_ENDPOINT || "https://plausible.io/api/event";
+        let plausibleEndpoint = process.env.PLAUSIBLE_ENDPOINT || "https://plausible.io/api/event";
+        let debugging = process.env.DEBUG !== undefined; // Grab production field, default to false if it does not exist.
         // Get the payload
-        const plausibleDomain = request.headers.get('Plausible-Domain');
+        const plausibleDomain = req.headers["plausible-domain"];
         if (!plausibleDomain) {
-            console.warn('There was no plausible domain found in the headers.');
-            return new Response('There was no plausible domain found in the headers.', { status: 400 });
+            console.warn("Missing Plausible-Domain in headers.");
+            return res.status(400).send("Missing Plausible-Domain header.");
         }
-        console.log(`Plausible Domain: ${plausibleDomain}`);
-        const clonedRequest = request.clone();
-        const body = await clonedRequest.json();
-        // Process the event type, if not the right event ignore
-        const eventType = body.type;
-        let eventName;
-        if (eventType == "page") {
-            eventName = "pageview";
-        } else if (eventType == "track") {
-            eventName = body.event;
+        customLogging.log(`Plausible Domain: ${plausibleDomain}`);
+        const { type, event, properties = {}, context = {}, request_ip, plausibleProps = {} } = req.body;
+        let eventName = type === "page" ? "pageview" : type === "track" ? event : null;
+        customLogging.log(`Event Type: ${type}`);
+        customLogging.log(`Event Name: ${eventName}`);
+        // Ignore irrelevant events
+        if (!eventName) {
+            return res.status(202).send("Ignored event type.");
         }
-        if (eventName) {
-            // Structure the request to Plausible
-            let plausibleRequestHeaders = {
-                "User-Agent": body.context?.userAgent || "Default-User-Agent",
-            }
-            if (body.request_ip) {
-                plausibleRequestHeaders["X-Forwarded-For"] = body.request_ip;
-            }
-
-            let plausibleRequestBody = {
-                domain: plausibleDomain,
-                name: eventName,
-                url: body.properties?.url || "",
-                referrer: body.context?.page?.referrer || "",
-            }
-            // Look to see if there is a key called plausibleProps in the body (you can add further detail through transformations if you want).
-            if (body.plausibleProps) {
-                plausibleRequestBody.props = body.plausibleProps
-            }
-            console.log(JSON.stringify(plausibleRequestBody));
-            // Send data to Plausible
-            const response = await fetch (plausibleEndpoint, {
-                    method: 'POST',
-                    headers: plausibleRequestHeaders,
-                    body: JSON.stringify(plausibleRequestBody)
-                }
-            )
-            if (response.ok) {
-                return new Response( 'Success', { status: 200 });
-            } else {
-                const responseText = await response.text();
-                console.log(responseText);
-                return new Response(`Failed to push to Plausible events API`, { status: 500 });
-            }
-        } else {
-            return new Response('Wrong event type', { status: 202 }); //Ignore Identify etc
-        }        
+        // Construct request body for Plausible
+        const plausibleRequestBody = {
+            domain: plausibleDomain,
+            name: eventName,
+            url: properties.url || "",
+            referrer: context.page?.referrer || "",
+            ...(Object.keys(plausibleProps).length ? { props: plausibleProps } : {}),
+        };
+        // Set headers for Plausible request
+        const plausibleRequestHeaders = {
+            "Content-Type": "application/json",
+        };
+        plausibleRequestHeaders["User-Agent"] = context.userAgent || "Unknown-User-Agent";
+        // Only add x forwarded for if the ip exists in the payload.
+        if (request_ip) {
+            plausibleRequestHeaders["X-Forwarded-For"] = request_ip;
+        }
+        customLogging.log(`Outgoing Headers: ${JSON.stringify(plausibleRequestHeaders)}`);
+        customLogging.log(`Outgoing Body: ${JSON.stringify(plausibleRequestBody)}`);
+        // Send request to Plausible
+        const plausibleResponse = await fetch(plausibleEndpoint, {
+            method: "POST",
+            headers: plausibleRequestHeaders,
+            body: JSON.stringify(plausibleRequestBody),
+        });
+        // Handle Plausible failing.
+        let responseText;
+        if (debugging) {
+            responseText = await plausibleResponse.text(); 
+        }
+        customLogging.log(`Plausible Response: ${responseText}`);
+        customLogging.log(`Response Status: ${plausibleResponse.status}`);
+        if (!plausibleResponse.ok) {
+            console.error("Plausible API Error:", responseText);
+            return res.status(plausibleResponse.status).send(responseText);
+        }
+        return res.status(plausibleResponse.status).send("Success");
     } catch (error) {
-        console.error('Error processing request:', error.message);
-        return new Response(`Internal Server Error: ${error.message}`, { status: 500 });
+        console.error("Error:", error);
+        return res.status(500).send("Internal Server Error");
     }
-}
+});
 
-export default {
-    async fetch(request, env, ctx) {
-        const method = request.method;
-        if (method === "OPTIONS") {
-            return new Response(null, {
-                status: 204,
-                headers: {
-                    "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Methods": "POST",
-                    "Access-Control-Allow-Headers": "Content-Type, Plausible-Domain",
-                    "Access-Control-Max-Age": "86400"
-                },
-            });
-        }
-        if (method === "POST") {
-           return handleRequest(request, env);
-        } else {
-            return new Response(`Method Not Allowed.`, { status: 405 });
-        }
-    },
-};
+// Handle CORS preflight requests
+app.options("/", (req, res) => {
+    res.set({
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST",
+        "Access-Control-Allow-Headers": "Content-Type, Plausible-Domain",
+        "Access-Control-Max-Age": "86400",
+    });
+    res.status(204).send();
+});
+
+// Start the server
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => {
+    console.log(`Server listening on port ${PORT}`);
+});
